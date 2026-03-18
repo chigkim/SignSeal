@@ -1,0 +1,36 @@
+[project]
+name = "SignSeal"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "cryptography",
+    "zstandard",
+]
+
+[project.optional-dependencies]
+gui = [
+    "wxpython",
+]
+
+build = [
+    "wxpython",
+    "pyinstaller",
+]
+
+all = [
+    "wxpython",
+    "pyinstaller",
+    "pytest"
+]
+
+[project.scripts]
+ss-cli = "SignSeal.cli:main"
+ss-gui = "SignSeal.gui:main"
+
+[tool.uv]
+package = true
+
+[tool.setuptools]
+packages = { find = { where = ["."], include = ["SignSeal", "SignSeal.*"] } }
