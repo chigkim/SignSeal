@@ -64,6 +64,14 @@ class VaultLike(Protocol):
     ) -> None: ...
 
 
+class EntryLike(Protocol):
+    source: str
+    created_at: str
+    note: str
+
+    def has_key(self, field_name: str) -> bool: ...
+
+
 @dataclass(frozen=True)
 class ImportSummary:
     imported_labels: list[str]
@@ -90,12 +98,17 @@ class EntrySummary:
     capabilities: str
     source: str
     created_at: str
+    note: str
+    key_states: dict[str, bool]
 
     def format_label(self) -> str:
         return (
             f"{self.name:<20} [{self.capabilities:<4}] "
             f"{self.source.capitalize():<12} {self.created_at}"
         )
+
+    def has_key(self, field_name: str) -> bool:
+        return bool(self.key_states.get(field_name))
 
 
 class KeyWorkflowService:
@@ -116,16 +129,18 @@ class KeyWorkflowService:
     def describe_entry(
         self,
         name: str,
-        entry: VaultEntry,
+        entry: EntryLike,
     ) -> EntrySummary:
         return EntrySummary(
             name=name,
             capabilities=capability_string(entry),
             source=entry.source,
             created_at=entry.created_at,
+            note=entry.note,
+            key_states=entry_key_states(entry),
         )
 
-    def describe_entries(self, entries: dict[str, VaultEntry]) -> list[EntrySummary]:
+    def describe_entries(self, entries: dict[str, EntryLike]) -> list[EntrySummary]:
         return [self.describe_entry(name, entry) for name, entry in entries.items()]
 
     def generate_entry(
@@ -239,7 +254,7 @@ class KeyWorkflowService:
 
     def export_preview(
         self,
-        entry: VaultEntry,
+        entry: EntryLike,
         name: str,
         base_dir: Path,
         selections: dict[str, bool],
@@ -262,9 +277,15 @@ class KeyWorkflowService:
         name: str,
         base_dir: Path,
         selections: dict[str, bool],
+        private_passwords: dict[str, str] | None = None,
     ) -> ExportSummary:
         target_dir = base_dir / sanitize_entry_name(name)
         normalized_selections = self.normalize_key_selections(selections)
+        self.authorize_private_key_access(
+            entry,
+            normalized_selections,
+            private_passwords,
+        )
         return ExportSummary(
             target_dir=target_dir,
             existing_files=[],
@@ -280,9 +301,16 @@ class KeyWorkflowService:
         vault: VaultLike,
         name: str,
         base_dir: Path,
+        private_passwords: dict[str, str] | None = None,
     ) -> ExportSummary:
         entry = self.require_entry(vault, name)
-        return self.export_keys(entry, name, base_dir, entry_key_states(entry))
+        return self.export_keys(
+            entry,
+            name,
+            base_dir,
+            entry_key_states(entry),
+            private_passwords=private_passwords,
+        )
 
     def fingerprint_text(
         self,
@@ -295,15 +323,34 @@ class KeyWorkflowService:
         self,
         name: str,
         entry: VaultEntry,
+        selections: dict[str, bool] | None = None,
+        private_passwords: dict[str, str] | None = None,
     ) -> str:
-        return format_entry_paper_keys(name, entry)
+        normalized_selections = (
+            entry_key_states(entry)
+            if selections is None
+            else self.normalize_key_selections(selections)
+        )
+        self.authorize_private_key_access(
+            entry,
+            normalized_selections,
+            private_passwords,
+        )
+        return format_entry_paper_keys(name, entry, normalized_selections)
 
     def show_entry_text(
         self,
         name: str,
         entry: VaultEntry,
         include_paper_keys: bool = False,
+        private_passwords: dict[str, str] | None = None,
     ) -> str:
+        if include_paper_keys:
+            self.authorize_private_key_access(
+                entry,
+                entry_key_states(entry),
+                private_passwords,
+            )
         lines = [
             f"[Entry: {name}]",
             f"  Source:     {entry.source}",
@@ -337,9 +384,48 @@ class KeyWorkflowService:
     def available_import_selections(self, source: str | Path) -> dict[str, bool]:
         return self.selections_for_keys(discover_keys(source))
 
+    def required_private_key_specs(
+        self,
+        entry: EntryLike,
+        selections: dict[str, bool],
+    ):
+        normalized_selections = self.normalize_key_selections(selections)
+        return [
+            spec
+            for spec in KEY_SPECS
+            if spec.is_private
+            and normalized_selections.get(spec.field_name)
+            and entry.has_key(spec.field_name)
+        ]
+
+    def shared_private_passwords(
+        self,
+        entry: EntryLike,
+        selections: dict[str, bool],
+        password: str,
+    ) -> dict[str, str]:
+        if not password:
+            return {}
+        return {
+            spec.field_name: password
+            for spec in self.required_private_key_specs(entry, selections)
+        }
+
+    def validate_private_passwords(
+        self,
+        entry: VaultEntry,
+        selections: dict[str, bool],
+        private_passwords: dict[str, str] | None = None,
+    ) -> None:
+        self.authorize_private_key_access(
+            entry,
+            self.normalize_key_selections(selections),
+            private_passwords,
+        )
+
     def overwrite_labels(
         self,
-        entry: VaultEntry | None,
+        entry: EntryLike | None,
         selections: dict[str, bool],
     ) -> list[str]:
         if entry is None:
@@ -354,6 +440,27 @@ class KeyWorkflowService:
         if entry is None:
             raise SignSealError(f"Entry '{name}' not found.")
         return entry
+
+    def authorize_private_key_access(
+        self,
+        entry: VaultEntry,
+        selections: dict[str, bool],
+        private_passwords: dict[str, str] | None = None,
+    ) -> None:
+        passwords = private_passwords or {}
+        for spec in self.required_private_key_specs(entry, selections):
+            password = passwords.get(spec.field_name, "")
+            if not password:
+                raise SignSealError(
+                    f"{spec.label} password is required for private-key disclosure"
+                )
+            raw = entry.key_bytes(spec.field_name)
+            if raw is None:
+                continue
+            if spec.name == "decrypt":
+                CryptoEngine.load_decrypt_key(raw, password)
+            elif spec.name == "sign":
+                CryptoEngine.load_sign_key(raw, password)
 
 
 class ProcessWorkflowService:
@@ -371,7 +478,7 @@ class ProcessWorkflowService:
 
     def recipient_names(
         self,
-        entries: dict[str, VaultEntry],
+        entries: dict[str, EntryLike],
         mode: ProcessMode,
     ) -> list[str]:
         required_field = "encrypt_key" if mode == ProcessMode.ENCRYPT else "decrypt_key"
@@ -381,7 +488,7 @@ class ProcessWorkflowService:
 
     def sender_names(
         self,
-        entries: dict[str, VaultEntry],
+        entries: dict[str, EntryLike],
         mode: ProcessMode,
     ) -> list[str]:
         required_field = "sign_key" if mode == ProcessMode.ENCRYPT else "verify_key"

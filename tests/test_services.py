@@ -48,6 +48,10 @@ def test_key_workflow_service_export_import_and_remove(tmp_path: Path) -> None:
         "alice",
         tmp_path,
         selections,
+        private_passwords={
+            "decrypt_key": "entry-password-123",
+            "sign_key": "entry-password-123",
+        },
     )
     assert export_summary.target_dir.exists()
     assert len(export_summary.exported_paths) == 4
@@ -115,7 +119,13 @@ def test_key_workflow_service_show_entry_text_and_overwrite_labels(
 
     workflow = KeyWorkflowService()
     rendered = workflow.show_entry_text(
-        "alice", vault.get_entry("alice"), include_paper_keys=True
+        "alice",
+        vault.get_entry("alice"),
+        include_paper_keys=True,
+        private_passwords={
+            "decrypt_key": "entry-password-123",
+            "sign_key": "entry-password-123",
+        },
     )
     overwrite = workflow.overwrite_labels(
         vault.get_entry("alice"),

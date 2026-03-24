@@ -7,12 +7,12 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from ..api import SignSeal
-from ..app_services import KeyWorkflowService, ProcessWorkflowService
+from ..app_services import EntrySummary, KeyWorkflowService, ProcessWorkflowService
 from ..config import Config
 from ..exceptions import SignSealError
 from ..io_utils import append_extension
 from ..key_specs import KEY_SPECS, KEY_SPECS_BY_NAME, entry_key_states
-from ..models import ProcessMode, VaultEntry
+from ..models import ProcessMode
 
 from .prompts import confirm_action, prompt_new_password, prompt_password
 
@@ -243,15 +243,14 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def print_entries(entries: dict[str, VaultEntry]) -> None:
-    key_service = KeyWorkflowService()
+def print_entries(entries: dict[str, EntrySummary]) -> None:
     print("\n[Vault Entries]")
     if not entries:
         print("  (None)")
         return
     print(f"  {'Name':<25} {'Caps':<10} {'Source':<12} {'Created At'}")
     print(f"  {'-'*25} {'-'*10} {'-'*12} {'-'*20}")
-    for summary in key_service.describe_entries(entries):
+    for summary in entries.values():
         print(f"  - {summary.format_label()}")
 
 
@@ -267,6 +266,36 @@ def _prompt_key_password(
         else f"{key_label.capitalize()} password: "
     )
     return prompt_password(prompt)
+
+
+def _prompt_private_key_disclosure_passwords(
+    client: SignSeal,
+    key_service: KeyWorkflowService,
+    entry,
+    selections: dict[str, bool],
+    *,
+    key_name: str | None,
+) -> dict[str, str]:
+    required_specs = key_service.required_private_key_specs(entry, selections)
+    if not required_specs:
+        return {}
+    password = _prompt_key_password(
+        client,
+        key_name=key_name,
+        key_label="private keys",
+    )
+    private_passwords = key_service.shared_private_passwords(
+        entry,
+        selections,
+        password,
+    )
+    if key_name is not None:
+        client.validate_private_passwords(
+            key_name,
+            selections,
+            private_passwords,
+        )
+    return private_passwords
 
 
 def handle_init(args, context: CLIContext) -> None:
@@ -354,7 +383,20 @@ def handle_export(args, context: CLIContext) -> None:
         print("[*] Export cancelled.")
         return
 
-    summary = client.export(args.name, args.path, selections=selections)
+    private_passwords = _prompt_private_key_disclosure_passwords(
+        client,
+        key_service,
+        entry,
+        selections,
+        key_name=args.name,
+    )
+
+    summary = client.export(
+        args.name,
+        args.path,
+        selections=selections,
+        private_passwords=private_passwords,
+    )
     if summary.exported_paths:
         print(
             f"[*] Exported {len(summary.exported_paths)} keys to {args.path}: "
@@ -365,7 +407,21 @@ def handle_export(args, context: CLIContext) -> None:
 
 
 def handle_show(args, context: CLIContext) -> None:
-    print(context.get_client().show(args.name, paper=args.paper))
+    client = context.get_client()
+    private_passwords: dict[str, str] | None = None
+    if args.paper:
+        entry = client.list().get(args.name)
+        if entry is None:
+            raise SignSealError(f"Entry '{args.name}' not found.")
+        key_service = KeyWorkflowService()
+        private_passwords = _prompt_private_key_disclosure_passwords(
+            client,
+            key_service,
+            entry,
+            entry_key_states(entry),
+            key_name=args.name,
+        )
+    print(client.show(args.name, paper=args.paper, private_passwords=private_passwords))
 
 
 def handle_add(args, context: CLIContext) -> None:

@@ -12,6 +12,11 @@ from SignSeal.randgen import generate_random_file
 
 _F: str = Config.FILE_EXT
 _V: str = Config.VAULT_EXT
+_ASSETS_DIR = Path(__file__).parent / "assets"
+_GOLDEN_VAULT_PATH = _ASSETS_DIR / "golden.ssvv0"
+_GOLDEN_ENCRYPTED_PATH = _ASSETS_DIR / "golden.docx.ssfv0"
+_GOLDEN_PASSWORD = "test12345678"
+_GOLDEN_ENTRY_NAME = "test"
 
 
 # ── Binary format contracts ──────────────────────────────────────────────────
@@ -86,15 +91,52 @@ def _cleanup_tmp_contents(tmp_path: Path) -> None:
             child.unlink(missing_ok=True)
 
 
+def test_golden_vault_decrypt_and_roundtrip(tmp_path: Path) -> None:
+    decrypted_path = tmp_path / "golden.docx"
+    roundtrip_cipher_path = tmp_path / f"golden-roundtrip{_F}"
+    roundtrip_decrypted_path = tmp_path / "golden-roundtrip.docx"
+
+    try:
+        assert _GOLDEN_VAULT_PATH.exists()
+        assert _GOLDEN_ENCRYPTED_PATH.exists()
+
+        with SignSeal.SignSeal(_GOLDEN_PASSWORD, _GOLDEN_VAULT_PATH) as ss:
+            assert _GOLDEN_ENTRY_NAME in ss.list()
+
+            ss.decrypt(
+                _GOLDEN_ENCRYPTED_PATH,
+                recipient_key=_GOLDEN_ENTRY_NAME,
+                recipient_passphrase=_GOLDEN_PASSWORD,
+                out=decrypted_path,
+            )
+            original_bytes = decrypted_path.read_bytes()
+
+            ss.encrypt(
+                decrypted_path,
+                recipient_key=_GOLDEN_ENTRY_NAME,
+                out=roundtrip_cipher_path,
+                compress=False,
+            )
+            ss.decrypt(
+                roundtrip_cipher_path,
+                recipient_key=_GOLDEN_ENTRY_NAME,
+                recipient_passphrase=_GOLDEN_PASSWORD,
+                out=roundtrip_decrypted_path,
+            )
+
+        assert decrypted_path.exists()
+        assert roundtrip_cipher_path.exists()
+        assert roundtrip_decrypted_path.exists()
+        assert roundtrip_decrypted_path.read_bytes() == original_bytes
+    finally:
+        _cleanup_tmp_contents(tmp_path)
+
+
 def test_robust_key_workflow_end_to_end(tmp_path: Path) -> None:
     existing_entry_name = "test1"
     shared_password = "test12345678"
     test2_password = "test2-password-123"
-    vault_path = Path(__file__).with_name(f"vault{_V}")
-    if not vault_path.exists():
-        _ss = SignSeal(shared_password, vault_path)
-        _ss.generate(shared_password, name=existing_entry_name, security="low")
-        _ss.close()
+    vault_path = tmp_path / f"vault{_V}"
     payload_path = tmp_path / "payload.bin"
     exports_root = tmp_path / "exports"
     standalone_root = tmp_path / "standalone"
@@ -111,18 +153,22 @@ def test_robust_key_workflow_end_to_end(tmp_path: Path) -> None:
 
     try:
         ss = SignSeal(shared_password, vault_path)
+        ss.generate(shared_password, name=existing_entry_name, security="low")
         assert vault_path.exists()
 
         # ── Pin vault file binary layout ──
         _assert_vault_file_format(vault_path)
 
-        ss.remove("test2")
         assert existing_entry_name in ss.list()
 
         export_summary = ss.export(
             existing_entry_name,
             exports_root,
             selections=selections,
+            private_passwords={
+                "decrypt_key": shared_password,
+                "sign_key": shared_password,
+            },
         )
         assert export_summary.target_dir.exists()
         assert {path.name for path in export_summary.exported_paths} == {
@@ -236,6 +282,7 @@ def test_robust_key_workflow_end_to_end(tmp_path: Path) -> None:
         assert cross_to_test2_restored_path.read_bytes() == original_payload
     finally:
         if ss is not None:
-            ss.remove("test2")
+            if "test2" in ss.list():
+                ss.remove("test2")
             ss.close()
         _cleanup_tmp_contents(tmp_path)
