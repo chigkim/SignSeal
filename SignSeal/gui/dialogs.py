@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import wx
+import wx.adv
 
 from ..config import Config
 from ..key_specs import KEY_SPECS
@@ -10,6 +11,7 @@ APP_VERSION = "v0.1.0"
 APP_CREATED_ON = "2026-03-23"
 APP_CREATED_BY = "Chi Kim"
 APP_LICENSE = "MIT"
+APP_REPOSITORY_URL = "https://github.com/chigkim/SignSeal"
 APP_SECURITY_NOTICE = (
     "This software has not undergone formal security auditing. "
     "No guarantee is made regarding the confidentiality, integrity, or availability "
@@ -66,6 +68,9 @@ class AboutDialog(wx.Dialog):
                 wx.ALIGN_CENTER | wx.TOP | wx.LEFT | wx.RIGHT,
                 10,
             )
+
+        link = wx.adv.HyperlinkCtrl(self, id=wx.ID_ANY, label=APP_REPOSITORY_URL, url=APP_REPOSITORY_URL)
+        sizer.Add(link, 0, wx.ALIGN_CENTER | wx.TOP | wx.LEFT | wx.RIGHT, 10)
 
         notice = wx.StaticText(self, label=APP_SECURITY_NOTICE, style=wx.ALIGN_CENTER)
         notice.SetForegroundColour(WARNING_COLOR)
