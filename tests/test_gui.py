@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 import wx
@@ -587,6 +587,161 @@ def test_key_panel_export_overwrite_cancel_preserves_existing_file(
     frame.Destroy()
 
 
+def test_key_panel_export_prompts_for_selected_private_key_passwords(
+    monkeypatch, tmp_path
+) -> None:
+    ss = SignSeal("password12345", tmp_path / f"vault{_V}")
+    public_encrypt, private_decrypt, public_verify, private_sign = (
+        generate_key_material(
+            "entry-password-123",
+            security="low",
+        )
+    )
+    ss.vault.set_entry(
+        "Alice",
+        encrypt_key=public_encrypt,
+        decrypt_key=private_decrypt,
+        verify_key=public_verify,
+        sign_key=private_sign,
+    )
+    frame = MainFrame(ss)
+    frame.panel_keys._get_selected_name = MagicMock(return_value="Alice")
+    captured: dict[str, object] = {}
+
+    class MockPasswordDialog:
+        def __init__(self, *args, **kwargs):
+            captured.setdefault("messages", []).append(args[1])
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            pass
+
+        def ShowModal(self):
+            return wx.ID_OK
+
+        def GetValue(self):
+            return "entry-password-123"
+
+    monkeypatch.setattr(wx, "PasswordEntryDialog", MockPasswordDialog)
+    monkeypatch.setattr(
+        frame.panel_keys.ss,
+        "export",
+        lambda name, target_dir, selections=None, private_passwords=None: captured.update(
+            {
+                "name": name,
+                "selections": selections,
+                "private_passwords": private_passwords,
+            }
+        )
+        or type(
+            "ExportResult",
+            (),
+            {"exported_paths": [], "target_dir": Path(target_dir) / name},
+        )(),
+    )
+
+    frame.panel_keys.on_export(
+        MockEvent(),
+        target_dir=tmp_path / "exports",
+        selections={"decrypt_key": True, "sign_key": True},
+    )
+
+    assert captured["name"] == "Alice"
+    assert captured["selections"] == {"decrypt_key": True, "sign_key": True}
+    assert captured["private_passwords"] == {
+        "decrypt_key": "entry-password-123",
+        "sign_key": "entry-password-123",
+    }
+    assert len(captured["messages"]) == 1
+    assert "Decrypt (Private)" in captured["messages"][0]
+    assert "Sign (Private)" in captured["messages"][0]
+
+    frame.Destroy()
+
+
+def test_key_panel_export_validates_password_before_directory(
+    monkeypatch, tmp_path
+) -> None:
+    ss = SignSeal("password12345", tmp_path / f"vault{_V}")
+    _, private_decrypt, _, _ = generate_key_material(
+        "entry-password-123",
+        security="low",
+    )
+    ss.vault.set_entry("Alice", decrypt_key=private_decrypt)
+    frame = MainFrame(ss)
+    frame.panel_keys._get_selected_name = MagicMock(return_value="Alice")
+    call_order: list[str] = []
+    messages: list[tuple[str, str]] = []
+    export_calls: list[bool] = []
+
+    class MockPasswordDialog:
+        def __init__(self, *args, **kwargs):
+            call_order.append("password:init")
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            pass
+
+        def ShowModal(self):
+            call_order.append("password:show")
+            return wx.ID_OK
+
+        def GetValue(self):
+            return "entry-password-123"
+
+    class MockDirDialog:
+        def __init__(self, *args, **kwargs):
+            call_order.append("dir:init")
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            pass
+
+        def ShowModal(self):
+            call_order.append("dir:show")
+            return wx.ID_OK
+
+        def GetPath(self):
+            return str(tmp_path / "exports")
+
+    monkeypatch.setattr(wx, "PasswordEntryDialog", MockPasswordDialog)
+    monkeypatch.setattr(wx, "DirDialog", MockDirDialog)
+    monkeypatch.setattr(
+        frame.panel_keys.ss,
+        "validate_private_passwords",
+        lambda *args, **kwargs: call_order.append("validate")
+        or (_ for _ in ()).throw(SignSealError("bad password")),
+    )
+    monkeypatch.setattr(
+        frame.panel_keys.ss,
+        "export",
+        lambda *args, **kwargs: export_calls.append(True),
+    )
+    monkeypatch.setattr(
+        wx,
+        "MessageBox",
+        lambda message, caption, *args, **kwargs: messages.append((message, caption))
+        or wx.OK,
+    )
+
+    frame.panel_keys.on_export(
+        MockEvent(),
+        selections={"decrypt_key": True},
+    )
+
+    assert call_order == ["password:init", "password:show", "validate"]
+    assert export_calls == []
+    assert messages == [("Export failed: bad password", "Error")]
+
+    frame.Destroy()
+
+
 def test_key_panel_manual_add_overwrite_cancel_preserves_existing_key(
     monkeypatch, tmp_path
 ):
@@ -620,6 +775,210 @@ def test_key_panel_manual_add_overwrite_cancel_preserves_existing_key(
     frame.panel_keys.on_add_manual(MockEvent())
 
     assert ss.vault.get_entry("Alice").key_bytes("encrypt_key") == old_encrypt
+
+    frame.Destroy()
+
+
+def test_key_panel_paper_keys_prompts_for_private_key_passwords(
+    monkeypatch, tmp_path
+) -> None:
+    ss = SignSeal("password12345", tmp_path / f"vault{_V}")
+    public_encrypt, private_decrypt, public_verify, private_sign = (
+        generate_key_material(
+            "entry-password-123",
+            security="low",
+        )
+    )
+    ss.vault.set_entry(
+        "Alice",
+        encrypt_key=public_encrypt,
+        decrypt_key=private_decrypt,
+        verify_key=public_verify,
+        sign_key=private_sign,
+    )
+    frame = MainFrame(ss)
+    frame.panel_keys._get_selected_name = MagicMock(return_value="Alice")
+    captured: dict[str, object] = {}
+
+    class MockKeySelectionDialog:
+        def __init__(self, *args, **kwargs):
+            captured["selection_title"] = args[1]
+            captured["confirm_label"] = kwargs.get("confirm_label")
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            pass
+
+        def ShowModal(self):
+            return wx.ID_OK
+
+        def get_selections(self):
+            return {
+                "decrypt_key": True,
+                "sign_key": True,
+            }
+
+    class MockPasswordDialog:
+        def __init__(self, *args, **kwargs):
+            captured.setdefault("messages", []).append(args[1])
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            pass
+
+        def ShowModal(self):
+            return wx.ID_OK
+
+        def GetValue(self):
+            return "shared-pass-123"
+
+    class MockFingerprintDialog:
+        def __init__(self, parent, title, text):
+            captured["dialog_title"] = title
+            captured["text"] = text
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            pass
+
+        def ShowModal(self):
+            return wx.ID_OK
+
+    monkeypatch.setattr(
+        "SignSeal.gui.key_panel.KeySelectionDialog",
+        MockKeySelectionDialog,
+    )
+    monkeypatch.setattr(wx, "PasswordEntryDialog", MockPasswordDialog)
+    monkeypatch.setattr(
+        "SignSeal.gui.key_panel.FingerprintDialog", MockFingerprintDialog
+    )
+    monkeypatch.setattr(
+        frame.panel_keys.ss,
+        "paper_keys",
+        lambda name, selections=None, private_passwords=None: captured.update(
+            {
+                "name": name,
+                "selections": selections,
+                "private_passwords": private_passwords,
+            }
+        )
+        or "paper text",
+    )
+
+    frame.panel_keys.on_paper_keys(MockEvent())
+
+    assert captured["name"] == "Alice"
+    assert captured["selections"] == {
+        "decrypt_key": True,
+        "sign_key": True,
+    }
+    assert captured["private_passwords"] == {
+        "decrypt_key": "shared-pass-123",
+        "sign_key": "shared-pass-123",
+    }
+    assert captured["selection_title"] == "View 'Alice' Paper Keys"
+    assert captured["confirm_label"] == "View"
+    assert captured["dialog_title"] == "Paper Keys"
+    assert captured["text"] == "paper text"
+    assert len(captured["messages"]) == 1
+    assert "Decrypt (Private)" in captured["messages"][0]
+    assert "Sign (Private)" in captured["messages"][0]
+
+    frame.Destroy()
+
+
+def test_key_panel_paper_keys_public_only_selection_skips_password_prompt(
+    monkeypatch, tmp_path
+) -> None:
+    ss = SignSeal("password12345", tmp_path / f"vault{_V}")
+    public_encrypt, _, public_verify, _ = generate_key_material(
+        "entry-password-123",
+        security="low",
+    )
+    ss.vault.set_entry(
+        "Alice",
+        encrypt_key=public_encrypt,
+        verify_key=public_verify,
+    )
+    frame = MainFrame(ss)
+    frame.panel_keys._get_selected_name = MagicMock(return_value="Alice")
+    captured: dict[str, object] = {}
+
+    class MockKeySelectionDialog:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            pass
+
+        def ShowModal(self):
+            return wx.ID_OK
+
+        def get_selections(self):
+            return {
+                "encrypt_key": True,
+                "verify_key": True,
+            }
+
+    class MockFingerprintDialog:
+        def __init__(self, parent, title, text):
+            captured["title"] = title
+            captured["text"] = text
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            pass
+
+        def ShowModal(self):
+            return wx.ID_OK
+
+    def fail_password_dialog(*args, **kwargs):
+        raise AssertionError(
+            "Password dialog should not open for public-only paper keys"
+        )
+
+    monkeypatch.setattr(
+        "SignSeal.gui.key_panel.KeySelectionDialog",
+        MockKeySelectionDialog,
+    )
+    monkeypatch.setattr(wx, "PasswordEntryDialog", fail_password_dialog)
+    monkeypatch.setattr(
+        "SignSeal.gui.key_panel.FingerprintDialog", MockFingerprintDialog
+    )
+    monkeypatch.setattr(
+        frame.panel_keys.ss,
+        "paper_keys",
+        lambda name, selections=None, private_passwords=None: captured.update(
+            {
+                "name": name,
+                "selections": selections,
+                "private_passwords": private_passwords,
+            }
+        )
+        or "paper text",
+    )
+
+    frame.panel_keys.on_paper_keys(MockEvent())
+
+    assert captured["name"] == "Alice"
+    assert captured["selections"] == {
+        "encrypt_key": True,
+        "verify_key": True,
+    }
+    assert captured["private_passwords"] == {}
+    assert captured["title"] == "Paper Keys"
+    assert captured["text"] == "paper text"
 
     frame.Destroy()
 
@@ -826,82 +1185,6 @@ def test_create_vault_dialog_uses_custom_confirm_label() -> None:
     assert dialog.FindWindowById(wx.ID_CANCEL, dialog).GetLabel() == "Cancel"
 
     dialog.Destroy()
-
-
-def test_key_panel_export_uses_export_confirm_label(monkeypatch, temp_vault) -> None:
-    frame = MainFrame(temp_vault)
-    public_encrypt, _, _, _ = generate_key_material(
-        "entry-password-123", security="low"
-    )
-    temp_vault.vault.set_entry("Alice", encrypt_key=public_encrypt)
-    frame.panel_keys.refresh_lists()
-    frame.panel_keys._get_selected_name = MagicMock(return_value="Alice")
-    captured: dict[str, object] = {}
-
-    class MockKeySelectionDialog:
-        def __init__(self, *args, **kwargs):
-            captured["confirm_label"] = kwargs.get("confirm_label")
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *args):
-            pass
-
-        def ShowModal(self):
-            return wx.ID_CANCEL
-
-        def get_selections(self):
-            return {}
-
-    monkeypatch.setattr(
-        "SignSeal.gui.key_panel.KeySelectionDialog",
-        MockKeySelectionDialog,
-    )
-
-    frame.panel_keys.on_export(MockEvent())
-
-    assert captured == {"confirm_label": "Export"}
-
-    frame.Destroy()
-
-
-def test_key_panel_remove_uses_remove_confirm_label(monkeypatch, temp_vault) -> None:
-    frame = MainFrame(temp_vault)
-    public_encrypt, _, _, _ = generate_key_material(
-        "entry-password-123", security="low"
-    )
-    temp_vault.vault.set_entry("Alice", encrypt_key=public_encrypt)
-    frame.panel_keys.refresh_lists()
-    frame.panel_keys._get_selected_name = MagicMock(return_value="Alice")
-    captured: dict[str, object] = {}
-
-    class MockKeySelectionDialog:
-        def __init__(self, *args, **kwargs):
-            captured["confirm_label"] = kwargs.get("confirm_label")
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *args):
-            pass
-
-        def ShowModal(self):
-            return wx.ID_CANCEL
-
-        def get_selections(self):
-            return {}
-
-    monkeypatch.setattr(
-        "SignSeal.gui.key_panel.KeySelectionDialog",
-        MockKeySelectionDialog,
-    )
-
-    frame.panel_keys.on_remove(MockEvent())
-
-    assert captured == {"confirm_label": "Remove"}
-
-    frame.Destroy()
 
 
 def test_ask_new_vault_uses_contextual_dialog_labels(monkeypatch, tmp_path) -> None:

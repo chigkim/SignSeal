@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from .app_services import KeyWorkflowService
+from .app_services import EntrySummary, KeyWorkflowService
 from .config import Config
 from .exceptions import SignSealError
 from .key_encoding import fingerprint_key
@@ -172,8 +172,12 @@ class SignSeal:
             vault=self.vault,
         )
 
-    def list(self) -> dict[str, VaultEntry]:
-        return self._require_vault().entries()
+    def list(self) -> dict[str, EntrySummary]:
+        vault = self._require_vault()
+        return {
+            name: self._key_workflow.describe_entry(name, entry)
+            for name, entry in vault.entries().items()
+        }
 
     def import_keys(
         self,
@@ -203,21 +207,53 @@ class SignSeal:
         name: str,
         base_dir: str | Path,
         selections: dict[str, bool] | None = None,
+        private_passwords: dict[str, str] | None = None,
     ):
         vault = self._require_vault()
         base_path = Path(base_dir)
         if selections is None:
-            return self._key_workflow.export_all_keys(vault, name, base_path)
+            return self._key_workflow.export_all_keys(
+                vault,
+                name,
+                base_path,
+                private_passwords=private_passwords,
+            )
         entry = self._key_workflow.require_entry(vault, name)
-        return self._key_workflow.export_keys(entry, name, base_path, selections)
+        return self._key_workflow.export_keys(
+            entry,
+            name,
+            base_path,
+            selections,
+            private_passwords=private_passwords,
+        )
 
-    def show(self, name: str, paper: bool = False) -> str:
+    def validate_private_passwords(
+        self,
+        name: str,
+        selections: dict[str, bool],
+        private_passwords: dict[str, str] | None = None,
+    ) -> None:
+        vault = self._require_vault()
+        entry = self._key_workflow.require_entry(vault, name)
+        self._key_workflow.validate_private_passwords(
+            entry,
+            selections,
+            private_passwords=private_passwords,
+        )
+
+    def show(
+        self,
+        name: str,
+        paper: bool = False,
+        private_passwords: dict[str, str] | None = None,
+    ) -> str:
         vault = self._require_vault()
         entry = self._key_workflow.require_entry(vault, name)
         return self._key_workflow.show_entry_text(
             name,
             entry,
             include_paper_keys=paper,
+            private_passwords=private_passwords,
         )
 
     def add(self, name: str, source: str | Path):
@@ -235,10 +271,20 @@ class SignSeal:
                 return self._key_workflow.fingerprint_text(target, entry)
         return fingerprint_key(target)
 
-    def paper_keys(self, name: str) -> str:
+    def paper_keys(
+        self,
+        name: str,
+        selections: dict[str, bool] | None = None,
+        private_passwords: dict[str, str] | None = None,
+    ) -> str:
         vault = self._require_vault()
         entry = self._key_workflow.require_entry(vault, name)
-        return self._key_workflow.paper_keys_text(name, entry)
+        return self._key_workflow.paper_keys_text(
+            name,
+            entry,
+            selections=selections,
+            private_passwords=private_passwords,
+        )
 
     def note(self, name: str, note: str) -> None:
         self._require_vault().update_note(name, note)

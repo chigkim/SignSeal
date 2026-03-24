@@ -165,13 +165,18 @@ def format_entry_fingerprints(
 def format_entry_paper_keys(
     name: str,
     entry: VaultEntry,
+    selected_fields: dict[str, bool] | None = None,
 ) -> str:
     lines = [f"Paper Keys for: {name}", "=" * 30, ""]
-    found_keys = entry_key_bytes(entry)
+    entry_keys = entry_key_bytes(entry)
+    found_keys: dict[str, bytes] = {}
     for spec in KEY_SPECS:
-        raw = found_keys.get(spec.name)
+        if selected_fields is not None and not selected_fields.get(spec.field_name):
+            continue
+        raw = entry_keys.get(spec.name)
         if raw is None:
             continue
+        found_keys[spec.name] = raw
         lines.append(f"{spec.label}:")
         lines.append(get_alphanumeric_key(raw, expected_type=spec.name))
         lines.append("")

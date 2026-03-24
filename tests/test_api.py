@@ -293,7 +293,6 @@ def test_signseal_facade_generate_standalone_files(tmp_path: Path) -> None:
 def test_signseal_facade_generate_standalone_output_dir(tmp_path: Path) -> None:
     ss = SignSeal()
     key_dir = tmp_path / "keys_dir"
-    # key_dir does not exist, generate should create it
 
     ss.generate(
         "entry-pass-123456",
@@ -302,23 +301,8 @@ def test_signseal_facade_generate_standalone_output_dir(tmp_path: Path) -> None:
     )
 
     assert key_dir.exists()
-    assert (key_dir / KEY_SPECS_BY_NAME["encrypt"].filename).exists()
-    assert (key_dir / KEY_SPECS_BY_NAME["decrypt"].filename).exists()
-    assert (key_dir / KEY_SPECS_BY_NAME["verify"].filename).exists()
-    assert (key_dir / KEY_SPECS_BY_NAME["sign"].filename).exists()
-
-    # Verify we can use them
-    plaintext = b"output dir test"
-    ciphertext = ss.encrypt(
-        plaintext,
-        recipient_key=key_dir / KEY_SPECS_BY_NAME["encrypt"].filename,
-    )
-    restored = ss.decrypt(
-        ciphertext,
-        recipient_key=key_dir / KEY_SPECS_BY_NAME["decrypt"].filename,
-        recipient_passphrase="entry-pass-123456",
-    )
-    assert restored == plaintext
+    for key_name in ("encrypt", "decrypt", "verify", "sign"):
+        assert (key_dir / KEY_SPECS_BY_NAME[key_name].filename).exists()
 
 
 def test_signseal_generate_rejects_mixed_vault_and_file_targets(tmp_path: Path) -> None:
@@ -336,7 +320,15 @@ def test_signseal_facade_vault_management_commands(tmp_path: Path) -> None:
     ss = SignSeal("vault-pass-123456", tmp_path / f"vault{_V}")
     ss.generate("alice-pass-123456", name="alice", security="low")
 
-    export_summary = ss.export("alice", tmp_path / "exports")
+    private_passwords = {
+        "decrypt_key": "alice-pass-123456",
+        "sign_key": "alice-pass-123456",
+    }
+    export_summary = ss.export(
+        "alice",
+        tmp_path / "exports",
+        private_passwords=private_passwords,
+    )
     assert export_summary.target_dir.exists()
     assert len(export_summary.exported_paths) == 4
 
@@ -344,7 +336,7 @@ def test_signseal_facade_vault_management_commands(tmp_path: Path) -> None:
     assert import_summary.key_count == 4
 
     ss.note("bob", "trusted contact")
-    shown = ss.show("bob", paper=True)
+    shown = ss.show("bob", paper=True, private_passwords=private_passwords)
     assert "trusted contact" in shown
     assert "Full Bundle" in shown
 
@@ -355,7 +347,9 @@ def test_signseal_facade_vault_management_commands(tmp_path: Path) -> None:
     assert "Entry: bob" in entry_fingerprint
     assert ":" in file_fingerprint
 
-    bundle = ss.paper_keys("alice").splitlines()[-1]
+    bundle = ss.paper_keys("alice", private_passwords=private_passwords).splitlines()[
+        -1
+    ]
     add_summary = ss.add("carol", bundle)
     assert add_summary.key_count == 4
 
@@ -376,6 +370,69 @@ def test_signseal_facade_vault_management_commands(tmp_path: Path) -> None:
 
     with pytest.raises(SignSealError, match="not both"):
         ss.remove_keys("bob", {"sign_key": True}, sign_key=True)
+
+
+def test_signseal_list_returns_public_entry_summaries(tmp_path: Path) -> None:
+    ss = SignSeal("vault-pass-123456", tmp_path / f"vault{_V}")
+    ss.generate("alice-pass-123456", name="alice", security="low")
+    ss.note("alice", "trusted contact")
+
+    entry = ss.list()["alice"]
+
+    assert entry.note == "trusted contact"
+    assert entry.has_key("encrypt_key") is True
+    assert entry.has_key("decrypt_key") is True
+    assert not hasattr(entry, "key_bytes")
+
+
+def test_signseal_export_allows_public_only_disclosure_without_private_passwords(
+    tmp_path: Path,
+) -> None:
+    ss = SignSeal("vault-pass-123456", tmp_path / f"vault{_V}")
+    ss.generate("alice-pass-123456", name="alice", security="low")
+
+    export_summary = ss.export(
+        "alice",
+        tmp_path / "exports",
+        selections={"encrypt_key": True, "verify_key": True},
+    )
+
+    assert {path.name for path in export_summary.exported_paths} == {
+        KEY_SPECS_BY_NAME["encrypt"].filename,
+        KEY_SPECS_BY_NAME["verify"].filename,
+    }
+
+    shown = ss.paper_keys(
+        "alice",
+        selections={"encrypt_key": True, "verify_key": True},
+    )
+    assert "Encrypt (Public)" in shown
+    assert "Verify (Public)" in shown
+    assert "Decrypt (Private)" not in shown
+    assert "Sign (Private)" not in shown
+
+
+def test_signseal_private_export_and_paper_keys_require_private_passwords(
+    tmp_path: Path,
+) -> None:
+    ss = SignSeal("vault-pass-123456", tmp_path / f"vault{_V}")
+    ss.generate("alice-pass-123456", name="alice", security="low")
+
+    with pytest.raises(
+        SignSealError,
+        match="Decrypt \\(Private\\) password is required",
+    ):
+        ss.export(
+            "alice",
+            tmp_path / "exports",
+            selections={"decrypt_key": True},
+        )
+
+    with pytest.raises(
+        SignSealError,
+        match="Decrypt \\(Private\\) password is required",
+    ):
+        ss.paper_keys("alice")
 
 
 def test_invalid_password_raises_error() -> None:

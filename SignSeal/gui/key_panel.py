@@ -6,6 +6,7 @@ import wx
 
 from ..api import SignSeal
 from ..app_services import KeyWorkflowService
+from ..exceptions import SignSealError
 from ..key_specs import entry_key_states
 
 from .dialogs import FingerprintDialog, KeySelectionDialog, set_dialog_button_labels
@@ -276,36 +277,68 @@ class KeyPanel(wx.Panel):
         if not any(selections.values()):
             return
 
-        if target_dir is None:
-            with wx.DirDialog(
-                self, f"Select folder to export '{name}' keys", "", wx.DD_DEFAULT_STYLE
-            ) as dialog:
-                set_dialog_button_labels(dialog, affirmative="Export", cancel="Cancel")
-                if dialog.ShowModal() != wx.ID_OK:
-                    return
-                target_dir = Path(dialog.GetPath())
-        else:
-            target_dir = Path(target_dir)
-
-        preview = self.workflow.export_preview(entry, name, target_dir, selections)
-        if preview.existing_files and event is not None:
-            message = (
-                f"The following files already exist in '{preview.target_dir}':\n\n"
-            )
-            message += ", ".join(preview.existing_files) + "\n\nOverwrite them?"
-            if (
-                wx.MessageBox(message, "Confirm Overwrite", wx.YES_NO | wx.ICON_WARNING)
-                != wx.YES
-            ):
-                return
-
         try:
-            summary = self.ss.export(name, target_dir, selections=selections)
+            private_passwords = self._prompt_private_key_passwords(
+                name,
+                entry,
+                selections,
+                event,
+            )
+            if private_passwords is None:
+                if event is not None:
+                    return
+                raise SignSealError("private key password is required")
+            self.ss.validate_private_passwords(
+                name,
+                selections,
+                private_passwords,
+            )
+            if target_dir is None:
+                with wx.DirDialog(
+                    self,
+                    f"Select folder to export '{name}' keys",
+                    "",
+                    wx.DD_DEFAULT_STYLE,
+                ) as dialog:
+                    set_dialog_button_labels(
+                        dialog,
+                        affirmative="Export",
+                        cancel="Cancel",
+                    )
+                    if dialog.ShowModal() != wx.ID_OK:
+                        return
+                    target_dir = Path(dialog.GetPath())
+            else:
+                target_dir = Path(target_dir)
+
+            preview = self.workflow.export_preview(entry, name, target_dir, selections)
+            if preview.existing_files and event is not None:
+                message = (
+                    f"The following files already exist in '{preview.target_dir}':\n\n"
+                )
+                message += ", ".join(preview.existing_files) + "\n\nOverwrite them?"
+                if (
+                    wx.MessageBox(
+                        message,
+                        "Confirm Overwrite",
+                        wx.YES_NO | wx.ICON_WARNING,
+                    )
+                    != wx.YES
+                ):
+                    return
+            summary = self.ss.export(
+                name,
+                target_dir,
+                selections=selections,
+                private_passwords=private_passwords,
+            )
             if summary.exported_paths and event is not None:
                 show_in_explorer(summary.target_dir)
         except Exception as exc:
             if event is not None:
                 wx.MessageBox(f"Export failed: {exc}", "Error")
+                return
+            raise
 
     def on_add_manual(self, event) -> None:
         name = self._get_selected_name()
@@ -361,12 +394,80 @@ class KeyPanel(wx.Panel):
             if event is not None:
                 wx.MessageBox(f"Manual add failed: {exc}", "Error")
 
-    def on_paper_keys(self, event):
+    def on_paper_keys(self, event, selections=None):
         name = self._get_selected_name()
         if not name:
             return None
-        text = self.ss.paper_keys(name)
-        if event is not None:
-            with FingerprintDialog(self, "Paper Keys", text) as dialog:
-                dialog.ShowModal()
-        return text
+        entry = self._entries().get(name)
+        if entry is None:
+            return None
+        if selections is None:
+            with KeySelectionDialog(
+                self,
+                f"View '{name}' Paper Keys",
+                entry_key_states(entry),
+                confirm_label="View",
+            ) as selection_dialog:
+                if selection_dialog.ShowModal() != wx.ID_OK:
+                    return None
+                selections = selection_dialog.get_selections()
+        if not any(selections.values()):
+            return None
+        private_passwords = self._prompt_private_key_passwords(
+            name,
+            entry,
+            selections,
+            event,
+        )
+        if private_passwords is None:
+            if event is not None:
+                return None
+            raise SignSealError("private key password is required")
+        try:
+            text = self.ss.paper_keys(
+                name,
+                selections=selections,
+                private_passwords=private_passwords,
+            )
+            if event is not None:
+                with FingerprintDialog(self, "Paper Keys", text) as dialog:
+                    dialog.ShowModal()
+            return text
+        except Exception as exc:
+            if event is not None:
+                wx.MessageBox(str(exc), "Error")
+                return None
+            raise
+
+    def _prompt_private_key_passwords(
+        self,
+        name: str,
+        entry,
+        selections: dict[str, bool],
+        event,
+    ) -> dict[str, str] | None:
+        private_specs = self.workflow.required_private_key_specs(entry, selections)
+        if not private_specs:
+            return {}
+
+        if event is None:
+            return None
+
+        labels = ", ".join(spec.label for spec in private_specs)
+        with wx.PasswordEntryDialog(
+            self,
+            f"Password for selected private keys in '{name}':\n\n{labels}",
+            "Private Key Password",
+        ) as dialog:
+            set_dialog_button_labels(
+                dialog,
+                affirmative="Continue",
+                cancel="Cancel",
+            )
+            if dialog.ShowModal() != wx.ID_OK:
+                return None
+            return self.workflow.shared_private_passwords(
+                entry,
+                selections,
+                dialog.GetValue(),
+            )

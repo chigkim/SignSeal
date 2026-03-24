@@ -12,6 +12,15 @@ from SignSeal.cli.main import CLIContext, main
 _V: str = Config.VAULT_EXT
 
 
+def _generate_standalone_keys(
+    tmp_path: Path,
+    patch_prompts,
+    password: str = "alice-password-123",
+) -> None:
+    patch_prompts([password, password])
+    main(["generate", str(tmp_path)], context=CLIContext())
+
+
 def test_cli_rename_remove_roundtrip(tmp_path: Path, patch_prompts) -> None:
     vault_path = tmp_path / f"test{_V}"
     vpass = "vault-password-123"
@@ -65,7 +74,7 @@ def test_cli_export_import_add_roundtrip(tmp_path: Path, patch_prompts) -> None:
     main(["generate", "Alice", "-v", str(vault_path)], context=CLIContext())
 
     # Export Alice
-    patch_prompts([vpass])
+    patch_prompts([vpass, apass])
     main(
         ["export", "Alice", str(export_dir), "-v", str(vault_path)],
         context=CLIContext(),
@@ -112,9 +121,7 @@ def test_cli_sign_verify_standalone(tmp_path: Path, patch_prompts, capsys) -> No
     data_file.write_text("hello")
     apass = "alice-password-123"
 
-    # 1. Generate standalone keys
-    patch_prompts([apass, apass])
-    main(["generate", str(tmp_path)])
+    _generate_standalone_keys(tmp_path, patch_prompts, apass)
 
     priv_s = tmp_path / KEY_SPECS_BY_NAME["sign"].filename
     pub_v = tmp_path / KEY_SPECS_BY_NAME["verify"].filename
@@ -135,11 +142,8 @@ def test_cli_sign_verify_standalone(tmp_path: Path, patch_prompts, capsys) -> No
 def test_cli_fingerprint(tmp_path: Path, patch_prompts, capsys) -> None:
     apass = "alice-password-123"
 
-    # 1. Generate keys
-    patch_prompts([apass, apass])
-    main(["generate", str(tmp_path)], context=CLIContext())
+    _generate_standalone_keys(tmp_path, patch_prompts, apass)
 
-    # 2. Check fingerprint
     pub_e = tmp_path / KEY_SPECS_BY_NAME["encrypt"].filename
     main(["fingerprint", str(pub_e)])
     out = capsys.readouterr().out

@@ -31,7 +31,12 @@ def test_cli_init_generate_list_and_show(patch_prompts, capsys, tmp_path: Path) 
     main(["list", "-v", str(vault_path)])
     list_output = capsys.readouterr().out
 
-    patch_prompts(["vault-password-123"])
+    patch_prompts(
+        [
+            "vault-password-123",
+            "entry-password-123",
+        ]
+    )
     main(["show", "alice", "--paper", "-v", str(vault_path)])
     show_output = capsys.readouterr().out
 
@@ -58,7 +63,15 @@ def test_cli_import_cancelled_when_overwrite_rejected(
 
     workflow = KeyWorkflowService()
     vault = SignSeal("vault-password-123", vault_path).vault
-    workflow.export_all_keys(vault, "alice", export_root)
+    workflow.export_all_keys(
+        vault,
+        "alice",
+        export_root,
+        private_passwords={
+            "decrypt_key": "entry-password-123",
+            "sign_key": "entry-password-123",
+        },
+    )
 
     monkeypatch.setattr(builtins, "input", lambda prompt="": "n")
     patch_prompts(["vault-password-123"])
